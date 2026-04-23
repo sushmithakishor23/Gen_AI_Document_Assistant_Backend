@@ -8,7 +8,8 @@ AI-powered document assistant backend with document processing, vector embedding
 - ✅ **Text Chunking**: Intelligent text splitting with LangChain
 - ✅ **Vector Embeddings**: OpenAI or sentence-transformers support
 - ✅ **Vector Search**: ChromaDB-based semantic search
-- 🚧 **FastAPI Endpoints**: (Coming soon)
+- ✅ **RAG API**: Complete REST API with upload and query endpoints
+- ✅ **LLM Integration**: OpenAI GPT integration for question answering
 
 ## Project Structure
 
@@ -16,11 +17,13 @@ AI-powered document assistant backend with document processing, vector embedding
 .
 ├── app/
 │   ├── routes/          # API route handlers
+│   │   └── documents.py         # Upload and query endpoints
 │   ├── services/        # Business logic and AI services
 │   │   ├── document_loader.py    # PDF/DOCX/TXT extraction
 │   │   ├── chunker.py            # Text chunking
 │   │   ├── embeddings.py         # Embedding generation
-│   │   └── vector_store.py       # ChromaDB vector search
+│   │   ├── vector_store.py       # ChromaDB vector search
+│   │   └── llm_service.py        # LLM integration for RAG
 │   └── utils/           # Utility functions
 ├── tests/               # Test files
 ├── data/                # Document storage
@@ -80,14 +83,78 @@ py test_vector_store_openai.py
 ### 5. Run the Server
 
 ```powershell
-# Development mode (with auto-reload)
-python main.py
+# Quick start with helpful instructions
+py start_server.py
 
-# Or using uvicorn directly
+# Or run directly
+py main.py
+
+# Or using uvicorn
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 The server will start at `http://localhost:8000`
+
+**Access the API:**
+- Interactive Docs: http://localhost:8000/docs
+- API Documentation: See `API_DOCUMENTATION.md`
+- Health Check: http://localhost:8000/health
+
+## API Endpoints
+
+### POST /api/v1/upload
+Upload and ingest documents into vector store.
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/upload" \
+  -F "file=@document.pdf" \
+  -F "collection_name=documents"
+```
+
+### POST /api/v1/query
+Ask questions using RAG (Retrieval-Augmented Generation).
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/query" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What is this document about?",
+    "k": 4
+  }'
+```
+
+**Response:**
+```json
+{
+  "answer": "The document discusses...",
+  "sources": [...],
+  "model": "gpt-3.5-turbo",
+  "context_used": 3
+}
+```
+
+### GET /api/v1/collections/{name}/stats
+Get collection statistics.
+
+### DELETE /api/v1/collections/{name}
+Clear all documents from a collection.
+
+**Full API documentation:** See `API_DOCUMENTATION.md`
+
+## Testing the API
+
+```powershell
+# Test the complete RAG pipeline
+py test_api.py
+
+# Test specific endpoints
+py test_api.py upload
+py test_api.py query "What is NLP?"
+py test_api.py stats
+
+# Generate curl examples
+py test_api.py curl
+```
 
 ## Quick Start - Document Processing
 
@@ -159,10 +226,18 @@ See `VECTOR_STORE_GUIDE.md` for complete documentation.
 - Metadata filtering and management
 - Automatic persistence to `./chroma_db`
 
+### LLM Service (`app/services/llm_service.py`)
+- OpenAI GPT integration (gpt-3.5-turbo, gpt-4)
+- RAG prompt engineering
+- Context-aware question answering
+- Source citation in answers
+
 ## Test Scripts
 
 | Script | Description | Requirement |
 |--------|-------------|-------------|
+| `start_server.py` | Start API server with helpful info | OPENAI_API_KEY |
+| `test_api.py` | Test RAG API endpoints (upload/query) | Running server |
 | `test_document_processing.py` | Tests document loader and chunker | None |
 | `test_pdf.py` | Focused PDF processing test | None |
 | `test_vector_store_openai.py` | Vector store with OpenAI | OPENAI_API_KEY |
@@ -171,6 +246,7 @@ See `VECTOR_STORE_GUIDE.md` for complete documentation.
 
 ## Documentation
 
+- **`API_DOCUMENTATION.md`** - Complete REST API documentation with examples
 - **`VECTOR_STORE_GUIDE.md`** - Complete vector store usage guide
 - **`WINDOWS_PYTORCH_FIX.md`** - Troubleshooting PyTorch on Windows
 - **`IMPLEMENTATION_SUMMARY.md`** - Document processing implementation details

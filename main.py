@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 import os
 from datetime import datetime
 
+from app.routes import documents_router
+
 # Load environment variables
 load_dotenv()
 
@@ -11,7 +13,7 @@ load_dotenv()
 app = FastAPI(
     title=os.getenv("APP_NAME", "Gen AI Document Assistant"),
     version=os.getenv("APP_VERSION", "1.0.0"),
-    description="AI-powered document assistant backend API"
+    description="AI-powered document assistant backend API with RAG capabilities"
 )
 
 # Configure CORS
@@ -22,6 +24,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include routers
+app.include_router(documents_router)
 
 
 @app.get("/")

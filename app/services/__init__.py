@@ -18,6 +18,7 @@ from .embeddings import (
     embed_texts
 )
 from .vector_store import VectorStore, create_vector_store
+from .llm_service import LLMService, create_llm_service, answer_with_rag
 
 __all__ = [
     'DocumentLoader',
@@ -35,5 +36,8 @@ __all__ = [
     'embed_text',
     'embed_texts',
     'VectorStore',
-    'create_vector_store'
+    'create_vector_store',
+    'LLMService',
+    'create_llm_service',
+    'answer_with_rag'
 ]
