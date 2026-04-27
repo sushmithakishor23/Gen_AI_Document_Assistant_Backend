@@ -1,4 +1,4 @@
-# Setup script for Gen AI Document Assistant Backend
+ # Setup script for Gen AI Document Assistant Backend
 # Run this script to set up the development environment
 
 Write-Host "Setting up Gen AI Document Assistant Backend..." -ForegroundColor Green

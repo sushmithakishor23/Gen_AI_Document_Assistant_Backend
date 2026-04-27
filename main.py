@@ -1,8 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 import os
 from datetime import datetime
+from pathlib import Path
 
 from app.routes import documents_router
 
@@ -28,14 +31,24 @@ app.add_middleware(
 # Include routers
 app.include_router(documents_router)
 
+# Mount static files
+static_dir = Path(__file__).parent / "static"
+static_dir.mkdir(exist_ok=True)
+
+app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
 
 @app.get("/")
 async def root():
-    """Root endpoint"""
+    """Serve the chat UI"""
+    index_path = static_dir / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
     return {
         "message": "Welcome to Gen AI Document Assistant API",
         "status": "online",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now().isoformat(),
+        "note": "Chat UI not found. Please check /docs for API documentation."
     }
 
 
