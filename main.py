@@ -67,7 +67,14 @@ if __name__ == "__main__":
     import uvicorn
     
     host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", 8000))
+    
+    # Parse PORT with error handling for non-numeric values
+    try:
+        port = int(os.getenv("PORT", "8000"))
+    except (ValueError, TypeError):
+        print(f"Warning: Invalid PORT value '{os.getenv('PORT')}', using default 8000")
+        port = 8000
+    
     debug = os.getenv("DEBUG", "True").lower() == "true"
     
     uvicorn.run(

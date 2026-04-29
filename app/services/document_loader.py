@@ -37,6 +37,11 @@ class ScannedPDFError(DocumentLoaderError):
     pass
 
 
+class SecurityError(DocumentLoaderError):
+    """Raised when a security issue is detected (e.g., path traversal attempt)."""
+    pass
+
+
 class DocumentLoader:
     """
     Service for loading and extracting text from various document formats.
@@ -48,10 +53,60 @@ class DocumentLoader:
     """
     
     SUPPORTED_EXTENSIONS = {'.pdf', '.docx', '.txt'}
+    MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB limit
     
     def __init__(self):
         """Initialize the DocumentLoader."""
         pass
+    
+    def _validate_path(self, file_path: str) -> Path:
+        """
+        Validate and sanitize file path to prevent security issues.
+        
+        Args:
+            file_path: Path to validate
+            
+        Returns:
+            Resolved Path object
+            
+        Raises:
+            SecurityError: If path traversal or other security issue is detected
+            FileNotFoundError: If the file doesn't exist
+        """
+        # Check for path traversal patterns in the input
+        if ".." in file_path:
+            raise SecurityError(
+                "Path traversal attempt detected. File paths cannot contain '..'"
+            )
+        
+        # Check for absolute paths trying to access system files
+        # This is a basic check - in production you might want to restrict to specific directories
+        dangerous_paths = [
+            "/etc/", "\\windows\\", "/sys/", "/proc/", 
+            "c:\\windows\\", "c:\\program files\\", "/root/", "/home/"
+        ]
+        file_path_lower = file_path.lower()
+        for dangerous in dangerous_paths:
+            if dangerous in file_path_lower:
+                raise SecurityError(
+                    f"Access to system directories is not allowed"
+                )
+        
+        # Convert to Path object and resolve to absolute path
+        try:
+            path = Path(file_path).resolve(strict=False)
+        except (OSError, ValueError) as e:
+            raise SecurityError(f"Invalid file path: {str(e)}")
+        
+        # Verify the file exists
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+        
+        # Verify it's actually a file (not a directory, symlink, etc.)
+        if not path.is_file():
+            raise SecurityError(f"Path is not a regular file: {file_path}")
+        
+        return path
     
     def load(self, file_path: str) -> str:
         """
@@ -65,19 +120,25 @@ class DocumentLoader:
             
         Raises:
             FileNotFoundError: If the file doesn't exist
+            SecurityError: If path traversal or security issue is detected
             UnsupportedFileTypeError: If the file type is not supported
             EmptyFileError: If the file is empty or contains no text
             CorruptedFileError: If the file is corrupted
             ScannedPDFError: If PDF is scanned and OCR is not available
         """
-        # Validate file exists
-        path = Path(file_path)
-        if not path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
+        # Validate and sanitize the file path (security check)
+        path = self._validate_path(file_path)
         
-        # Check file size
-        if path.stat().st_size == 0:
+        # Check file size to prevent loading extremely large files
+        file_size = path.stat().st_size
+        if file_size == 0:
             raise EmptyFileError(f"File is empty: {file_path}")
+        
+        if file_size > self.MAX_FILE_SIZE:
+            raise ValueError(
+                f"File too large: {file_size / 1024 / 1024:.1f}MB. "
+                f"Maximum size: {self.MAX_FILE_SIZE / 1024 / 1024}MB"
+            )
         
         # Get file extension
         extension = path.suffix.lower()
@@ -89,13 +150,14 @@ class DocumentLoader:
                 f"Supported types: {', '.join(self.SUPPORTED_EXTENSIONS)}"
             )
         
-        # Route to appropriate loader
+        # Route to appropriate loader (use str(path) for compatibility)
+        file_path_str = str(path)
         if extension == '.pdf':
-            return self._load_pdf(file_path)
+            return self._load_pdf(file_path_str)
         elif extension == '.docx':
-            return self._load_docx(file_path)
+            return self._load_docx(file_path_str)
         elif extension == '.txt':
-            return self._load_txt(file_path)
+            return self._load_txt(file_path_str)
     
     def _load_pdf(self, file_path: str) -> str:
         """

@@ -6,6 +6,7 @@ Handles interactions with Large Language Models for RAG (Retrieval-Augmented Gen
 import os
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 
 class LLMService:
@@ -40,7 +41,11 @@ class LLMService:
                 "or pass api_key parameter."
             )
         
-        self.client = OpenAI(api_key=self.api_key)
+        # Initialize OpenAI client with timeout
+        self.client = OpenAI(
+            api_key=self.api_key,
+            timeout=30.0  # 30 second timeout for API calls
+        )
     
     def generate_rag_prompt(
         self,
@@ -129,16 +134,13 @@ Answer: """
                 "Always cite your sources when providing information."
             )
         
-        # Call OpenAI API
+        # Call OpenAI API with retry logic
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
+            response = self._create_completion_with_retry(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
-                ],
-                temperature=self.temperature,
-                max_tokens=self.max_tokens
+                ]
             )
             
             answer = response.choices[0].message.content.strip()
@@ -172,6 +174,21 @@ Answer: """
         except Exception as e:
             raise RuntimeError(f"LLM API call failed: {str(e)}")
     
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((Exception,)),
+        reraise=True
+    )
+    def _create_completion_with_retry(self, messages: List[Dict[str, str]]):
+        """Create chat completion with automatic retry on failure."""
+        return self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens
+        )
+    
     def simple_completion(
         self,
         prompt: str,
@@ -191,18 +208,13 @@ Answer: """
             system_prompt = "You are a helpful AI assistant."
         
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
+            response = self._create_completion_with_retry(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
-                ],
-                temperature=self.temperature,
-                max_tokens=self.max_tokens
+                ]
             )
-            
             return response.choices[0].message.content.strip()
-            
         except Exception as e:
             raise RuntimeError(f"LLM API call failed: {str(e)}")
     

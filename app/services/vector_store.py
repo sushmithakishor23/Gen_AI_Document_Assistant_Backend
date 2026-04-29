@@ -38,7 +38,18 @@ class VectorStore:
         self.persist_directory = persist_directory
         
         # Create persist directory if it doesn't exist
-        Path(persist_directory).mkdir(parents=True, exist_ok=True)
+        try:
+            Path(persist_directory).mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            raise RuntimeError(
+                f"Permission denied: Cannot create ChromaDB directory '{persist_directory}'. "
+                f"Please check directory permissions or choose a different location."
+            )
+        except OSError as e:
+            raise RuntimeError(
+                f"Failed to create ChromaDB directory '{persist_directory}': {str(e)}. "
+                f"Please check disk space and file system permissions."
+            )
         
         # Initialize embeddings service if not provided
         if embeddings_service is None:
@@ -47,20 +58,54 @@ class VectorStore:
         else:
             self.embeddings_service = embeddings_service
         
-        # Initialize ChromaDB client
-        self.client = chromadb.PersistentClient(
-            path=persist_directory,
-            settings=Settings(
-                anonymized_telemetry=False,
-                allow_reset=True
+        # Initialize ChromaDB client with proper error handling
+        try:
+            self.client = chromadb.PersistentClient(
+                path=persist_directory,
+                settings=Settings(
+                    anonymized_telemetry=False,
+                    allow_reset=True
+                )
             )
-        )
+        except PermissionError:
+            raise RuntimeError(
+                f"Permission denied: Cannot access ChromaDB directory '{persist_directory}'. "
+                f"Please check directory permissions."
+            )
+        except OSError as e:
+            if "disk" in str(e).lower() or "space" in str(e).lower():
+                raise RuntimeError(
+                    f"Disk space error: Cannot initialize ChromaDB at '{persist_directory}'. "
+                    f"Please free up disk space and try again. Error: {str(e)}"
+                )
+            else:
+                raise RuntimeError(
+                    f"Failed to initialize ChromaDB at '{persist_directory}': {str(e)}. "
+                    f"Please ensure the directory is writable and has sufficient disk space."
+                )
+        except Exception as e:
+            raise RuntimeError(
+                f"Unexpected error initializing ChromaDB client: {str(e)}. "
+                f"This may be due to a corrupted database or incompatible ChromaDB version. "
+                f"Try deleting '{persist_directory}' and restarting."
+            )
         
-        # Get or create collection
-        self.collection = self.client.get_or_create_collection(
-            name=collection_name,
-            metadata={"hnsw:space": "cosine"}  # Use cosine similarity
-        )
+        # Get or create collection with error handling
+        try:
+            self.collection = self.client.get_or_create_collection(
+                name=collection_name,
+                metadata={"hnsw:space": "cosine"}  # Use cosine similarity
+            )
+        except ValueError as e:
+            raise RuntimeError(
+                f"Invalid collection name '{collection_name}': {str(e)}. "
+                f"Collection names must contain only alphanumeric characters, hyphens, and underscores."
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to create/access collection '{collection_name}': {str(e)}. "
+                f"The database may be corrupted. Try deleting '{persist_directory}' and restarting."
+            )
         
         print(f"✓ Vector store initialized")
         print(f"  Collection: {collection_name}")
@@ -108,14 +153,30 @@ class VectorStore:
         print(f"Generating embeddings for {len(chunks)} chunks...")
         embeddings = self.embeddings_service.embed_texts(chunks)
         
-        # Add to ChromaDB
+        # Add to ChromaDB with error handling
         print(f"Adding {len(chunks)} documents to vector store...")
-        self.collection.add(
-            embeddings=embeddings,
-            documents=chunks,
-            metadatas=metadata,
-            ids=ids
-        )
+        try:
+            self.collection.add(
+                embeddings=embeddings,
+                documents=chunks,
+                metadatas=metadata,
+                ids=ids
+            )
+        except ValueError as e:
+            raise RuntimeError(
+                f"Invalid data format for ChromaDB: {str(e)}. "
+                f"Please check that IDs are unique and metadata is properly formatted."
+            )
+        except OSError as e:
+            raise RuntimeError(
+                f"Disk error while adding documents to ChromaDB: {str(e)}. "
+                f"Please check disk space at '{self.persist_directory}'."
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to add documents to ChromaDB: {str(e)}. "
+                f"The database may be corrupted or out of disk space."
+            )
         
         result = {
             "added_count": len(chunks),
@@ -150,13 +211,29 @@ class VectorStore:
         print(f"Searching for: '{query[:100]}{'...' if len(query) > 100 else ''}'")
         query_embedding = self.embeddings_service.embed_text(query)
         
-        # Search ChromaDB
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=min(k, self.collection.count()),
-            where=filter_metadata,
-            include=["documents", "metadatas", "distances"]
-        )
+        # Search ChromaDB with error handling
+        try:
+            results = self.collection.query(
+                query_embeddings=[query_embedding],
+                n_results=min(k, self.collection.count()),
+                where=filter_metadata,
+                include=["documents", "metadatas", "distances"]
+            )
+        except ValueError as e:
+            raise RuntimeError(
+                f"Invalid search parameters: {str(e)}. "
+                f"Please check your metadata filter or search parameters."
+            )
+        except OSError as e:
+            raise RuntimeError(
+                f"Disk error while searching ChromaDB: {str(e)}. "
+                f"The database at '{self.persist_directory}' may be corrupted or inaccessible."
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to search ChromaDB: {str(e)}. "
+                f"The database may be corrupted. Try restarting the service."
+            )
         
         # Format results
         formatted_results = []
@@ -188,7 +265,18 @@ class VectorStore:
         Returns:
             Dictionary with operation results
         """
-        self.collection.delete(ids=ids)
+        try:
+            self.collection.delete(ids=ids)
+        except ValueError as e:
+            raise RuntimeError(
+                f"Invalid document IDs: {str(e)}. "
+                f"Please check that the IDs exist in the collection."
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to delete documents from ChromaDB: {str(e)}. "
+                f"The database may be corrupted or locked."
+            )
         
         result = {
             "deleted_count": len(ids),
@@ -205,12 +293,28 @@ class VectorStore:
         Returns:
             Dictionary with operation results
         """
-        count_before = self.collection.count()
-        self.client.delete_collection(name=self.collection_name)
-        self.collection = self.client.create_collection(
-            name=self.collection_name,
-            metadata={"hnsw:space": "cosine"}
-        )
+        try:
+            count_before = self.collection.count()
+            self.client.delete_collection(name=self.collection_name)
+            self.collection = self.client.create_collection(
+                name=self.collection_name,
+                metadata={"hnsw:space": "cosine"}
+            )
+        except PermissionError:
+            raise RuntimeError(
+                f"Permission denied: Cannot modify collection '{self.collection_name}'. "
+                f"The database may be locked by another process."
+            )
+        except OSError as e:
+            raise RuntimeError(
+                f"Disk error while clearing collection: {str(e)}. "
+                f"Check disk space at '{self.persist_directory}'."
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to clear collection '{self.collection_name}': {str(e)}. "
+                f"The database may be corrupted. Try restarting the service."
+            )
         
         result = {
             "deleted_count": count_before,

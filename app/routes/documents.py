@@ -6,7 +6,7 @@ API endpoints for document upload, ingestion, and querying.
 import os
 import tempfile
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict
 from fastapi import APIRouter, UploadFile, File, HTTPException, Form
 from pydantic import BaseModel, Field
 
@@ -52,23 +52,24 @@ class UploadResponse(BaseModel):
 # Initialize router
 router = APIRouter(prefix="/api/v1", tags=["documents"])
 
-# Global vector store (initialized on first use)
-_vector_store: Optional[VectorStore] = None
+# Global vector stores (initialized on first use per collection)
+_vector_stores: Dict[str, VectorStore] = {}
 _llm_service: Optional[LLMService] = None
 
 
 def get_vector_store(collection_name: str = "documents") -> VectorStore:
-    """Get or create vector store instance."""
-    global _vector_store
-    # For simplicity, we're using a single global instance
-    # In production, you might want to manage multiple collections
-    if _vector_store is None:
-        _vector_store = VectorStore(
+    """Get or create vector store instance for the specified collection."""
+    global _vector_stores
+    
+    # Create a new VectorStore for each unique collection name
+    if collection_name not in _vector_stores:
+        _vector_stores[collection_name] = VectorStore(
             collection_name=collection_name,
             persist_directory="./chroma_db",
             use_openai_embeddings=True  # Using OpenAI for production
         )
-    return _vector_store
+    
+    return _vector_stores[collection_name]
 
 
 def get_llm_service() -> LLMService:
@@ -86,8 +87,8 @@ def get_llm_service() -> LLMService:
 async def upload_document(
     file: UploadFile = File(..., description="Document file (PDF, DOCX, or TXT)"),
     collection_name: str = Form("documents", description="Collection name for storage"),
-    chunk_size: int = Form(500, description="Size of text chunks"),
-    chunk_overlap: int = Form(50, description="Overlap between chunks")
+    chunk_size: int = Form(500, ge=100, le=5000, description="Size of text chunks (100-5000 characters)"),
+    chunk_overlap: int = Form(50, ge=0, le=500, description="Overlap between chunks (0-500 characters)")
 ):
     """
     Upload and ingest a document into the vector store.
@@ -102,12 +103,19 @@ async def upload_document(
     Args:
         file: Document file to upload
         collection_name: Name of the vector store collection
-        chunk_size: Size of each text chunk in characters
-        chunk_overlap: Number of characters to overlap between chunks
+        chunk_size: Size of each text chunk in characters (100-5000)
+        chunk_overlap: Number of characters to overlap between chunks (0-500, must be < chunk_size)
         
     Returns:
         UploadResponse with ingestion details
     """
+    # Validate chunk parameters
+    if chunk_overlap >= chunk_size:
+        raise HTTPException(
+            status_code=400,
+            detail=f"chunk_overlap ({chunk_overlap}) must be less than chunk_size ({chunk_size})"
+        )
+    
     # Validate file type
     allowed_extensions = {'.pdf', '.docx', '.txt'}
     file_ext = Path(file.filename).suffix.lower()
@@ -119,13 +127,34 @@ async def upload_document(
         )
     
     # Create a temporary file to save the upload
-    temp_file = None
+    # Initialize to None so cleanup in finally block works even if error occurs early
+    temp_file_path = None
+    
     try:
         # Save uploaded file to temporary location
         with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as temp_file:
-            content = await file.read()
-            temp_file.write(content)
             temp_file_path = temp_file.name
+            
+            # Read file in chunks to validate size without loading all into memory at once
+            MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+            content = bytearray()
+            buffer_size = 8192  # 8KB read buffer (renamed to avoid shadowing chunk_size param)
+            total_size = 0
+            
+            while True:
+                chunk = await file.read(buffer_size)
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > MAX_FILE_SIZE:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large. Maximum size is {MAX_FILE_SIZE // 1024 // 1024}MB. Your file is approximately {total_size // 1024 // 1024}MB."
+                    )
+                content.extend(chunk)
+            
+            # Write the validated content to temp file
+            temp_file.write(bytes(content))
         
         # Step 1: Extract text from document
         try:
@@ -176,11 +205,17 @@ async def upload_document(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
     finally:
-        # Clean up temporary file
-        if temp_file and os.path.exists(temp_file_path):
-            try:
-                os.unlink(temp_file_path)
-            except:
+        # Always clean up temporary file, even if an error occurred
+        # This ensures we don't leave orphaned temp files on the server
+        if temp_file_path:
+            if os.path.exists(temp_file_path):
+                try:
+                    os.unlink(temp_file_path)
+                except Exception as e:
+                    # Log but don't raise - cleanup failure shouldn't break the response
+                    print(f"Warning: Failed to delete temporary file {temp_file_path}: {e}")
+            else:
+                # File was already cleaned up or never created
                 pass
 
 

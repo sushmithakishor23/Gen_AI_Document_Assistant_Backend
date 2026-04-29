@@ -6,6 +6,7 @@ Provides text embedding capabilities using OpenAI or sentence-transformers.
 import os
 from typing import List, Literal, Optional
 from enum import Enum
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 
 class EmbeddingProvider(str, Enum):
@@ -64,7 +65,11 @@ class EmbeddingsService:
                 "or pass api_key parameter."
             )
         
-        self._client = OpenAI(api_key=self.api_key)
+        # Initialize OpenAI client with timeout
+        self._client = OpenAI(
+            api_key=self.api_key,
+            timeout=30.0  # 30 second timeout for API calls
+        )
         self.model_name = model_name
         
         # Set dimension based on model
@@ -134,8 +139,14 @@ class EmbeddingsService:
         else:
             return self._embed_sentence_transformers(valid_texts)
     
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((Exception,)),
+        reraise=True
+    )
     def _embed_openai(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings using OpenAI."""
+        """Generate embeddings using OpenAI with automatic retry on failure."""
         try:
             response = self._client.embeddings.create(
                 model=self.model_name,
