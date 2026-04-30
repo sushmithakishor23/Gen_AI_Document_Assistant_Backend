@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.routes import documents_router
+from app.database import init_db
 
 # Load environment variables
 load_dotenv()
@@ -27,6 +28,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize database on startup"""
+    init_db()
+    print("✓ Application startup complete")
+
 
 # Include routers
 app.include_router(documents_router)

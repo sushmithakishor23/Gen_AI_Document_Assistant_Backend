@@ -24,5 +24,8 @@ pydantic>=2.5.0
 pydantic-settings>=2.1.0
 tenacity>=8.2.0
 
+# Database
+sqlalchemy>=2.0.0
+
 # Optional: Anthropic (commented out by default)
 # anthropic>=0.8.0

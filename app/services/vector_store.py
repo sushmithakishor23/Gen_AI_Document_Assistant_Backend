@@ -286,6 +286,45 @@ class VectorStore:
         print(f"✓ Deleted {len(ids)} documents (remaining: {result['total_documents']})")
         return result
     
+    def delete_documents_by_prefix(self, prefix: str) -> Dict[str, Any]:
+        """
+        Delete all documents with IDs starting with the specified prefix.
+        Useful for deleting all chunks from a specific document.
+        
+        Args:
+            prefix: ID prefix to match
+            
+        Returns:
+            Dictionary with operation results
+        """
+        # Get all documents and filter by prefix
+        try:
+            all_docs = self.collection.get(include=["metadatas"])
+            matching_ids = [doc_id for doc_id in all_docs["ids"] if doc_id.startswith(prefix)]
+            
+            if not matching_ids:
+                return {
+                    "deleted_count": 0,
+                    "total_documents": self.collection.count()
+                }
+            
+            # Delete matching documents
+            self.collection.delete(ids=matching_ids)
+            
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to delete documents with prefix '{prefix}': {str(e)}. "
+                f"The database may be corrupted or locked."
+            )
+        
+        result = {
+            "deleted_count": len(matching_ids),
+            "total_documents": self.collection.count()
+        }
+        
+        print(f"✓ Deleted {len(matching_ids)} documents with prefix '{prefix}' (remaining: {result['total_documents']})")
+        return result
+    
     def clear_collection(self) -> Dict[str, Any]:
         """
         Clear all documents from the collection.

@@ -7,13 +7,17 @@ import os
 import tempfile
 from pathlib import Path
 from typing import List, Optional, Dict
-from fastapi import APIRouter, UploadFile, File, HTTPException, Form
+from datetime import datetime
+from fastapi import APIRouter, UploadFile, File, HTTPException, Form, Depends
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from app.services.document_loader import load_document, DocumentLoaderError
 from app.services.chunker import chunk_text
 from app.services.vector_store import VectorStore
 from app.services.llm_service import LLMService
+from app.database import get_db
+from app.models import Document, Collection
 
 
 # Request/Response models
@@ -47,6 +51,31 @@ class UploadResponse(BaseModel):
     chunks_stored: int
     collection_name: str
     message: str
+    document_id: int
+
+
+class DocumentInfo(BaseModel):
+    """Document information model."""
+    id: int
+    filename: str
+    file_type: str
+    file_size: int
+    collection_id: int
+    collection_name: str
+    chunks_count: int
+    chunk_size: int
+    chunk_overlap: int
+    created_at: datetime
+
+
+class CollectionInfo(BaseModel):
+    """Collection information model."""
+    id: int
+    name: str
+    description: Optional[str]
+    document_count: int
+    created_at: datetime
+    updated_at: datetime
 
 
 # Initialize router
@@ -88,7 +117,8 @@ async def upload_document(
     file: UploadFile = File(..., description="Document file (PDF, DOCX, or TXT)"),
     collection_name: str = Form("documents", description="Collection name for storage"),
     chunk_size: int = Form(500, ge=100, le=5000, description="Size of text chunks (100-5000 characters)"),
-    chunk_overlap: int = Form(50, ge=0, le=500, description="Overlap between chunks (0-500 characters)")
+    chunk_overlap: int = Form(50, ge=0, le=500, description="Overlap between chunks (0-500 characters)"),
+    db: Session = Depends(get_db)
 ):
     """
     Upload and ingest a document into the vector store.
@@ -169,6 +199,10 @@ async def upload_document(
             raise HTTPException(status_code=500, detail=f"Failed to chunk text: {str(e)}")
         
         # Step 3: Prepare metadata for each chunk
+        # Generate unique prefix for this document's chunks
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        doc_prefix = f"doc_{timestamp}"
+        
         metadata = []
         for i, chunk in enumerate(chunks):
             # Calculate approximate page number (rough estimate)
@@ -182,22 +216,52 @@ async def upload_document(
                 "total_chunks": len(chunks),
                 "page_number": approx_page,
                 "chunk_size": len(chunk),
-                "file_type": file_ext
+                "file_type": file_ext,
+                "doc_prefix": doc_prefix
             })
         
-        # Step 4: Store in vector database
+        # Step 4: Ensure collection exists in database
+        db_collection = db.query(Collection).filter(Collection.name == collection_name).first()
+        if not db_collection:
+            db_collection = Collection(
+                name=collection_name,
+                description=f"Auto-created collection: {collection_name}"
+            )
+            db.add(db_collection)
+            db.commit()
+            db.refresh(db_collection)
+        
+        # Step 5: Store in vector database
         try:
             vector_store = get_vector_store(collection_name)
-            result = vector_store.add_documents(chunks, metadata=metadata)
+            # Generate IDs with the document prefix
+            chunk_ids = [f"{doc_prefix}_{i}" for i in range(len(chunks))]
+            result = vector_store.add_documents(chunks, metadata=metadata, ids=chunk_ids)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to store in vector database: {str(e)}")
+        
+        # Step 6: Save document metadata to database
+        db_document = Document(
+            filename=file.filename,
+            file_type=file_ext,
+            file_size=total_size,
+            collection_id=db_collection.id,
+            chunks_count=len(chunks),
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            vector_ids_prefix=doc_prefix
+        )
+        db.add(db_document)
+        db.commit()
+        db.refresh(db_document)
         
         return UploadResponse(
             filename=file.filename,
             chunks_created=len(chunks),
             chunks_stored=result['added_count'],
             collection_name=collection_name,
-            message=f"Successfully ingested {file.filename} into {collection_name} collection"
+            message=f"Successfully ingested {file.filename} into {collection_name} collection",
+            document_id=db_document.id
         )
         
     except HTTPException:
@@ -330,3 +394,180 @@ async def clear_collection(collection_name: str = "documents"):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to clear collection: {str(e)}")
+
+
+@router.get("/documents", response_model=List[DocumentInfo])
+async def get_documents(
+    collection_name: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Get all documents, optionally filtered by collection.
+    
+    Args:
+        collection_name: Optional collection name to filter by
+        db: Database session
+        
+    Returns:
+        List of documents with metadata
+    """
+    try:
+        query = db.query(Document)
+        
+        # Filter by collection if specified
+        if collection_name:
+            collection = db.query(Collection).filter(Collection.name == collection_name).first()
+            if not collection:
+                raise HTTPException(status_code=404, detail=f"Collection '{collection_name}' not found")
+            query = query.filter(Document.collection_id == collection.id)
+        
+        documents = query.order_by(Document.created_at.desc()).all()
+        
+        # Convert to response models
+        return [
+            DocumentInfo(
+                id=doc.id,
+                filename=doc.filename,
+                file_type=doc.file_type,
+                file_size=doc.file_size,
+                collection_id=doc.collection_id,
+                collection_name=doc.collection.name,
+                chunks_count=doc.chunks_count,
+                chunk_size=doc.chunk_size,
+                chunk_overlap=doc.chunk_overlap,
+                created_at=doc.created_at
+            )
+            for doc in documents
+        ]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve documents: {str(e)}")
+
+
+@router.delete("/documents/{document_id}")
+async def delete_document(
+    document_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Delete a document and all its chunks from both database and vector store.
+    
+    Args:
+        document_id: ID of the document to delete
+        db: Database session
+        
+    Returns:
+        Confirmation message
+    """
+    try:
+        # Get document from database
+        document = db.query(Document).filter(Document.id == document_id).first()
+        if not document:
+            raise HTTPException(status_code=404, detail=f"Document with ID {document_id} not found")
+        
+        # Delete chunks from vector store
+        collection_name = document.collection.name
+        vector_store = get_vector_store(collection_name)
+        
+        try:
+            # Delete all chunks with this document's prefix
+            result = vector_store.delete_documents_by_prefix(document.vector_ids_prefix)
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to delete document chunks from vector store: {str(e)}"
+            )
+        
+        # Delete from database
+        db.delete(document)
+        db.commit()
+        
+        return {
+            "message": f"Successfully deleted document '{document.filename}'",
+            "document_id": document_id,
+            "filename": document.filename,
+            "chunks_deleted": result['deleted_count']
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to delete document: {str(e)}")
+
+
+@router.get("/collections", response_model=List[CollectionInfo])
+async def get_collections(db: Session = Depends(get_db)):
+    """
+    Get all collections with their document counts.
+    
+    Args:
+        db: Database session
+        
+    Returns:
+        List of collections
+    """
+    try:
+        collections = db.query(Collection).order_by(Collection.created_at.desc()).all()
+        
+        return [
+            CollectionInfo(
+                id=col.id,
+                name=col.name,
+                description=col.description,
+                document_count=len(col.documents),
+                created_at=col.created_at,
+                updated_at=col.updated_at
+            )
+            for col in collections
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve collections: {str(e)}")
+
+
+@router.post("/collections", response_model=CollectionInfo)
+async def create_collection(
+    name: str = Form(..., description="Collection name"),
+    description: Optional[str] = Form(None, description="Optional description"),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new collection/session.
+    
+    Args:
+        name: Collection name
+        description: Optional description
+        db: Database session
+        
+    Returns:
+        Created collection information
+    """
+    try:
+        # Check if collection already exists
+        existing = db.query(Collection).filter(Collection.name == name).first()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Collection '{name}' already exists")
+        
+        # Create new collection
+        collection = Collection(
+            name=name,
+            description=description
+        )
+        db.add(collection)
+        db.commit()
+        db.refresh(collection)
+        
+        return CollectionInfo(
+            id=collection.id,
+            name=collection.name,
+            description=collection.description,
+            document_count=0,
+            created_at=collection.created_at,
+            updated_at=collection.updated_at
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to create collection: {str(e)}")
+
