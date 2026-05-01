@@ -44,6 +44,19 @@ class QueryResponse(BaseModel):
     usage: Optional[dict] = None
 
 
+class ChatMessage(BaseModel):
+    """Chat message model."""
+    role: str = Field(..., description="Message role: 'user' or 'assistant'")
+    content: str = Field(..., description="Message text content")
+
+
+class ChatRequest(BaseModel):
+    """Chat request model with conversation history."""
+    question: str = Field(..., description="User question", min_length=1)
+    chat_history: List[ChatMessage] = Field(default=[], description="Previous conversation messages")
+    collection_id: Optional[str] = Field(None, description="Optional collection ID for context")
+
+
 class UploadResponse(BaseModel):
     """Response model for upload endpoint."""
     filename: str
@@ -284,54 +297,68 @@ async def upload_document(
 
 
 @router.post("/query", response_model=QueryResponse)
-async def query_documents(request: QueryRequest):
+async def query_documents(request: ChatRequest):
     """
-    Query documents using RAG (Retrieval-Augmented Generation).
+    Query documents using RAG (Retrieval-Augmented Generation) with chat history support.
     
     This endpoint:
-    1. Takes a user question
-    2. Retrieves relevant chunks from vector store
-    3. Uses LLM with retrieved context to generate answer
+    1. Takes a user question and optional chat history
+    2. Retrieves top 4 chunks from vector store
+    3. Passes last 5 messages from chat_history to LLM
     4. Returns answer with source citations
     
     Args:
-        request: QueryRequest with question and parameters
+        request: ChatRequest with question, chat_history, and optional collection_id
         
     Returns:
         QueryResponse with answer and sources
     """
     try:
-        # Step 1: Retrieve relevant chunks from vector store
-        vector_store = get_vector_store(request.collection_name)
+        # Use collection_id or default to "documents"
+        collection_name = request.collection_id or "documents"
+        
+        # Step 1: Retrieve top 4 chunks from vector store
+        vector_store = get_vector_store(collection_name)
         
         # Check if collection has any documents
         if vector_store.collection.count() == 0:
             raise HTTPException(
                 status_code=404,
-                detail=f"No documents found in collection '{request.collection_name}'. Please upload documents first."
+                detail=f"No documents found in collection '{collection_name}'. Please upload documents first."
             )
         
         search_results = vector_store.search(
             query=request.question,
-            k=request.k
+            k=4  # Retrieve top 4 chunks
         )
         
         if not search_results:
             return QueryResponse(
-                answer="I couldn't find any relevant information to answer your question.",
+                answer="I don't know based on the provided documents.",
                 sources=[],
                 model="gpt-3.5-turbo",
                 context_used=0
             )
         
-        # Step 2: Use LLM to generate answer with RAG
+        # Step 2: Convert ChatMessage objects to dict format and get last 5 messages
+        chat_history_dict = None
+        if request.chat_history:
+            # Take only last 5 messages from chat history
+            last_5_messages = request.chat_history[-5:]
+            chat_history_dict = [
+                {"role": msg.role, "content": msg.content}
+                for msg in last_5_messages
+            ]
+        
+        # Step 3: Use LLM to generate answer with RAG and chat history
         llm_service = get_llm_service()
         result = llm_service.answer_question(
             question=request.question,
-            context_chunks=search_results
+            context_chunks=search_results,
+            chat_history=chat_history_dict
         )
         
-        # Step 3: Format response
+        # Step 4: Format response with source chunks
         sources = [
             Source(
                 text=source['text'],
@@ -353,6 +380,92 @@ async def query_documents(request: QueryRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+
+@router.post("/chat", response_model=QueryResponse)
+async def chat_with_documents(request: ChatRequest):
+    """
+    Chat with documents using RAG with conversation history support.
+    
+    This endpoint:
+    1. Takes a user question and chat history
+    2. Retrieves relevant chunks from vector store
+    3. Uses LLM with retrieved context and chat history to generate answer
+    4. Returns answer with source citations
+    
+    Args:
+        request: ChatRequest with question, chat history, and optional collection ID
+        
+    Returns:
+        QueryResponse with answer and sources
+    """
+    try:
+        # Use collection_id or default to "documents"
+        collection_name = request.collection_id or "documents"
+        
+        # Step 1: Retrieve relevant chunks from vector store
+        vector_store = get_vector_store(collection_name)
+        
+        # Check if collection has any documents
+        if vector_store.collection.count() == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No documents found in collection '{collection_name}'. Please upload documents first."
+            )
+        
+        search_results = vector_store.search(
+            query=request.question,
+            k=4  # Default to 4 chunks for chat
+        )
+        
+        if not search_results:
+            return QueryResponse(
+                answer="I don't know based on the provided documents.",
+                sources=[],
+                model="gpt-3.5-turbo",
+                context_used=0
+            )
+        
+        # Step 2: Convert ChatMessage objects to dict format and get last 5 messages
+        chat_history_dict = None
+        if request.chat_history:
+            # Take only last 5 messages from chat history
+            last_5_messages = request.chat_history[-5:]
+            chat_history_dict = [
+                {"role": msg.role, "content": msg.content}
+                for msg in last_5_messages
+            ]
+        
+        # Step 3: Use LLM to generate answer with RAG and chat history
+        llm_service = get_llm_service()
+        result = llm_service.answer_question(
+            question=request.question,
+            context_chunks=search_results,
+            chat_history=chat_history_dict
+        )
+        
+        # Step 4: Format response
+        sources = [
+            Source(
+                text=source['text'],
+                similarity_score=source['similarity_score'],
+                metadata=source.get('metadata', {})
+            )
+            for source in result['sources']
+        ]
+        
+        return QueryResponse(
+            answer=result['answer'],
+            sources=sources,
+            model=result['model'],
+            context_used=result['context_used'],
+            usage=result.get('usage')
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
 
 
 @router.get("/collections/{collection_name}/stats")

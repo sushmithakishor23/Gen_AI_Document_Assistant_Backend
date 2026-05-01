@@ -51,6 +51,7 @@ class LLMService:
         self,
         question: str,
         context_chunks: List[Dict[str, Any]],
+        chat_history: Optional[List[Dict[str, str]]] = None,
         include_metadata: bool = True
     ) -> str:
         """
@@ -59,6 +60,7 @@ class LLMService:
         Args:
             question: User's question
             context_chunks: List of retrieved chunks with metadata
+            chat_history: Optional chat history (List of {"role": str, "content": str})
             include_metadata: Whether to include source metadata in context
             
         Returns:
@@ -81,12 +83,20 @@ class LLMService:
         
         context_text = "\n\n".join(context_parts)
         
+        # Build conversation history (use only last 5 messages)
+        history_text = ""
+        if chat_history:
+            recent_history = chat_history[-5:]  # Only last 5 messages
+            history_parts = []
+            for msg in recent_history:
+                role = msg.get('role', 'user').capitalize()
+                content = msg.get('content', '')
+                history_parts.append(f"{role}: {content}")
+            if history_parts:
+                history_text = "\n\nPrevious conversation:\n" + "\n".join(history_parts) + "\n"
+        
         # Create the full prompt
-        prompt = f"""You are a helpful AI assistant that answers questions based on the provided context. 
-Use the following pieces of context to answer the question at the end. 
-If you don't know the answer based on the context, just say that you don't know - don't try to make up an answer.
-Always cite which source(s) you used to formulate your answer.
-
+        prompt = f"""Use the following pieces of context to answer the question at the end.{history_text}
 Context:
 {context_text}
 
@@ -100,6 +110,7 @@ Answer: """
         self,
         question: str,
         context_chunks: List[Dict[str, Any]],
+        chat_history: Optional[List[Dict[str, str]]] = None,
         system_prompt: Optional[str] = None,
         include_sources: bool = True
     ) -> Dict[str, Any]:
@@ -109,6 +120,7 @@ Answer: """
         Args:
             question: User's question
             context_chunks: Retrieved context chunks from vector search
+            chat_history: Optional chat history (List of {"role": str, "content": str})
             system_prompt: Optional custom system prompt
             include_sources: Whether to include source information in response
             
@@ -124,14 +136,17 @@ Answer: """
             }
         
         # Generate the prompt
-        user_prompt = self.generate_rag_prompt(question, context_chunks)
+        user_prompt = self.generate_rag_prompt(question, context_chunks, chat_history)
         
-        # Default system prompt
+        # Default system prompt with strict instructions
         if system_prompt is None:
             system_prompt = (
                 "You are a knowledgeable AI assistant. Answer questions accurately "
-                "based on the provided context. Be concise but thorough. "
-                "Always cite your sources when providing information."
+                "based ONLY on the provided context documents. Be concise but thorough. "
+                "Always cite your sources when providing information. "
+                "IMPORTANT: If the answer cannot be found in the provided documents, "
+                "you MUST respond with 'I don't know based on the provided documents.' "
+                "Do NOT make up answers or use external knowledge."
             )
         
         # Call OpenAI API with retry logic
