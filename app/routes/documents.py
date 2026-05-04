@@ -317,7 +317,7 @@ async def query_documents(request: ChatRequest):
         # Use collection_id or default to "documents"
         collection_name = request.collection_id or "documents"
         
-        # Step 1: Retrieve top 4 chunks from vector store
+        # Step 1: Retrieve top 4 chunks using hybrid search (vector + BM25 + reranking)
         vector_store = get_vector_store(collection_name)
         
         # Check if collection has any documents
@@ -327,9 +327,12 @@ async def query_documents(request: ChatRequest):
                 detail=f"No documents found in collection '{collection_name}'. Please upload documents first."
             )
         
-        search_results = vector_store.search(
+        # Use hybrid search for better retrieval quality
+        search_results = vector_store.hybrid_search(
             query=request.question,
-            k=4  # Retrieve top 4 chunks
+            k=4,  # Final number of results
+            initial_k=10,  # Fetch 10 candidates for reranking
+            use_reranking=True  # Apply cross-encoder reranking
         )
         
         if not search_results:
@@ -403,7 +406,7 @@ async def chat_with_documents(request: ChatRequest):
         # Use collection_id or default to "documents"
         collection_name = request.collection_id or "documents"
         
-        # Step 1: Retrieve relevant chunks from vector store
+        # Step 1: Retrieve relevant chunks using hybrid search (vector + BM25 + reranking)
         vector_store = get_vector_store(collection_name)
         
         # Check if collection has any documents
@@ -413,9 +416,12 @@ async def chat_with_documents(request: ChatRequest):
                 detail=f"No documents found in collection '{collection_name}'. Please upload documents first."
             )
         
-        search_results = vector_store.search(
+        # Use hybrid search for better retrieval quality
+        search_results = vector_store.hybrid_search(
             query=request.question,
-            k=4  # Default to 4 chunks for chat
+            k=4,  # Final number of results
+            initial_k=10,  # Fetch 10 candidates for reranking
+            use_reranking=True  # Apply cross-encoder reranking
         )
         
         if not search_results:

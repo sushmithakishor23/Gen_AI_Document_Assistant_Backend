@@ -255,6 +255,57 @@ class VectorStore:
         print(f"✓ Found {len(formatted_results)} results")
         return formatted_results
     
+    def hybrid_search(
+        self,
+        query: str,
+        k: int = 4,
+        initial_k: int = 10,
+        use_reranking: bool = True,
+        filter_metadata: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Hybrid search combining vector search, BM25, and cross-encoder reranking.
+        
+        This method provides superior retrieval quality by:
+        1. Fetching more candidates with vector search (initial_k)
+        2. Combining vector scores with BM25 keyword scores
+        3. Reranking with cross-encoder for final top-k results
+        
+        Args:
+            query: Search query text
+            k: Final number of results to return
+            initial_k: Number of candidates to fetch initially (before reranking)
+            use_reranking: Whether to apply cross-encoder reranking
+            filter_metadata: Optional metadata filter
+            
+        Returns:
+            List of reranked search results with enhanced scores
+        """
+        from .hybrid_retrieval import create_hybrid_retriever
+        
+        # Step 1: Get initial candidates with vector search
+        initial_results = self.search(
+            query=query,
+            k=max(initial_k, k),  # Fetch more for reranking
+            filter_metadata=filter_metadata
+        )
+        
+        if not initial_results:
+            return []
+        
+        # Step 2: Apply hybrid retrieval (vector + BM25 + reranking)
+        retriever = create_hybrid_retriever(alpha=0.5)  # Balanced weighting
+        
+        final_results = retriever.retrieve(
+            query=query,
+            vector_results=initial_results,
+            initial_k=initial_k,
+            final_k=k,
+            use_reranking=use_reranking
+        )
+        
+        return final_results
+    
     def delete_documents(self, ids: List[str]) -> Dict[str, Any]:
         """
         Delete documents by IDs.
