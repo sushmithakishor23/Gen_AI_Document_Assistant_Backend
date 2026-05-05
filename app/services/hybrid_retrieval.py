@@ -6,8 +6,15 @@ for superior retrieval quality.
 
 from typing import List, Dict, Any, Optional
 from rank_bm25 import BM25Okapi
-from sentence_transformers import CrossEncoder
 import numpy as np
+
+# Try to import CrossEncoder, fall back to None
+try:
+    from sentence_transformers import CrossEncoder
+    CROSSENCODER_AVAILABLE = True
+except ImportError:
+    CROSSENCODER_AVAILABLE = False
+    CrossEncoder = None
 
 
 class HybridRetriever:
@@ -44,6 +51,8 @@ class HybridRetriever:
     @property
     def reranker(self):
         """Lazy load cross-encoder model."""
+        if not CROSSENCODER_AVAILABLE:
+            return None
         if self._reranker is None:
             print(f"Loading cross-encoder: {self.reranker_model_name}")
             self._reranker = CrossEncoder(self.reranker_model_name)
@@ -197,6 +206,11 @@ class HybridRetriever:
         """
         if not results:
             return []
+        
+        # If cross-encoder not available, return results as-is
+        if not CROSSENCODER_AVAILABLE or self.reranker is None:
+            print(f"⚠ Cross-encoder not available, skipping reranking")
+            return results[:top_k]
         
         # Prepare query-document pairs for cross-encoder
         pairs = [

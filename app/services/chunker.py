@@ -4,7 +4,52 @@ Splits text into manageable chunks using LangChain's RecursiveCharacterTextSplit
 """
 
 from typing import List, Optional
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+# Try to import langchain text splitter, fall back to simple implementation
+try:
+    from langchain.text_splitter import RecursiveCharacterTextSplitter as LangChainSplitter
+    LANGCHAIN_AVAILABLE = True
+except ImportError:
+    LANGCHAIN_AVAILABLE = False
+
+
+class SimpleTextChunker:
+    """Simple fallback chunker when LangChain is not available."""
+    
+    def __init__(self, chunk_size: int, chunk_overlap: int, separators: List[str], **kwargs):
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.separators = separators
+    
+    def split_text(self, text: str) -> List[str]:
+        """Simple text splitting."""
+        if not text:
+            return []
+        
+        chunks = []
+        start = 0
+        
+        while start < len(text):
+            end = start + self.chunk_size
+            
+            # If this is not the last chunk, try to break at a separator
+            if end < len(text):
+                # Look for the best separator within the chunk
+                best_break = end
+                for sep in self.separators:
+                    if not sep:
+                        continue
+                    # Find the last occurrence of this separator before the end
+                    pos = text.rfind(sep, start, end)
+                    if pos > start:
+                        best_break = pos + len(sep)
+                        break
+                end = best_break
+            
+            chunks.append(text[start:end])
+            start = end - self.chunk_overlap
+        
+        return chunks
 
 
 class TextChunker:
@@ -50,14 +95,21 @@ class TextChunker:
                 ""       # Characters (fallback)
             ]
         
-        # Initialize the LangChain text splitter
-        self.splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            separators=separators,
-            length_function=length_function,
-            is_separator_regex=False
-        )
+        # Initialize the text splitter (LangChain or fallback)
+        if LANGCHAIN_AVAILABLE:
+            self.splitter = LangChainSplitter(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                separators=separators,
+                length_function=length_function,
+                is_separator_regex=False
+            )
+        else:
+            self.splitter = SimpleTextChunker(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                separators=separators
+            )
     
     def chunk_text(self, text: str) -> List[str]:
         """
